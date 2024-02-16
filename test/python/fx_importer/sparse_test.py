@@ -10,6 +10,8 @@ from typing import Any, Callable, Optional
 import torch
 import torch.export
 import torch.nn as nn
+import numpy as np
+import math
 
 from torch_mlir.extras.fx_importer import FxImporter
 from torch_mlir.extras.fx_importer import SparsityMeta
@@ -172,12 +174,59 @@ def sparse_jit(f, *args, **kwargs):
     # Invoke.
     return invoker.main(*xargs)
 
+def generate_tensor(seed, shape, sparsity, dtype=np.float64):
+    """Generates a tensor given sparsity level, shape and data type.
+    Args:
+        seed: seed value for np.random.
+        shape: a tuple for the shape of tensor.
+        sparsity: sparsity level in the range of [0, 1].
+        dtype: data type of the generated tensor. Default is np.float64.
+    Returns:
+        A dense torch tensor with the specified shape, sparsity level and type.
+
+    Note: the tensor generated doesn't guarantee each batch will have the same
+    number of specified elements. Therefore, for batched CSR, torch.cat can be
+    used to concatenate generated tensors in the specified dimension.
+    """
+    np.random.seed(seed)
+    size = math.prod(shape)
+    nse = size - int(math.ceil(sparsity * size))
+
+    flat_output = np.zeros(size)
+    indices = np.random.choice(size, nse, replace=False)
+    values = np.random.uniform(0, 1, nse) * 100 + 1
+    flat_output[indices] = values
+
+    result = np.reshape(flat_output, shape).astype(dtype)
+    return torch.from_numpy(result)
 
 def run(f):
     print(f"{f.__name__}")
     print("-" * len(f.__name__))
     f()
     print()
+
+@run
+# CHECK-LABEL: test_generate_tensor
+# CHECK: tensor(crow_indices=tensor([0, 2, 4, 6, 8]),
+# CHECK:       col_indices=tensor([1, 2, 0, 2, 0, 1, 1, 2]),
+# CHECK:       values=tensor([48.7665, 65.8172, 34.7396, 82.2169, 48.9977, 40.2785,
+# CHECK:                      84.6079, 37.8242]), size=(4, 4), nnz=8,
+# CHECK:       layout=torch.sparse_csr)
+#
+# CHECK: tensor(crow_indices=tensor([0, 1, 1, 1, 1]),
+# CHECK:       col_indices=tensor([1]),
+# CHECK:       values=tensor([48.7665]), size=(4, 4), nnz=1, dtype=torch.float64,
+# CHECK:       layout=torch.sparse_csr)
+#
+def test_generate_tensor():
+    dense_input = generate_tensor(0, (4, 4), 0.5, np.float32)
+    sparse_input = dense_input.to_sparse_csr()
+    print(sparse_input)
+
+    dense_input = generate_tensor(0, (4, 4), 0.9, np.float64)
+    sparse_input = dense_input.to_sparse_csr()
+    print(sparse_input)
 
 
 @run
